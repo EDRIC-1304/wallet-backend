@@ -18,10 +18,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// --- MODIFIED SECTION START ---
+
+// Your MongoDB connection string
+const MONGO_URI = 'mongodb+srv://edric:wined@cluster0.49d4fas.mongodb.net/metamask';
+
 // Connect MongoDB
-mongoose.connect(process.env.MONGODB_URI)
+mongoose.connect(MONGO_URI)
 .then(() => console.log("MongoDB Connected"))
   .catch(err => console.log("MongoDB Error:", err));
+
+// --- MODIFIED SECTION END ---
+
 
 // Wallet Schema (no change)
 const walletSchema = new mongoose.Schema({
