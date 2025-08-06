@@ -1,4 +1,4 @@
-// server.js
+// server.js (with debugging logs)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -23,36 +23,22 @@ mongoose.connect(MONGO_URI)
 // --- Wallet Schema with Unique Username ---
 const walletSchema = new mongoose.Schema({
   userId: String,
-  username: { 
-    type: String, 
-    required: true, 
-    unique: true,    // Enforces unique usernames at the database level
-    lowercase: true, // Automatically converts username to lowercase
-  },
+  username: { type: String, required: true, unique: true, lowercase: true },
   address: String,
   mnemonic: String,
   encryptedJson: String,
 });
-
 const Wallet = mongoose.model('Wallet', walletSchema);
 
 // --- Transaction Schema ---
 const transactionSchema = new mongoose.Schema({
     txHash: { type: String, required: true, unique: true, lowercase: true },
-    from: String, 
-    to: String, 
-    amount: String, 
-    token: String, 
-    status: String,
-    blockNumber: Number, 
-    gasUsed: String, 
-    gasFee: String, 
-    timestamp: String
+    from: String, to: String, amount: String, token: String, status: String,
+    blockNumber: Number, gasUsed: String, gasFee: String, timestamp: String
 });
 const Transaction = mongoose.model('Transaction', transactionSchema);
 
-
-// --- Endpoint to create wallet (handles duplicate usernames) ---
+// --- Endpoints for wallets (unchanged) ---
 app.post('/api/wallets', async (req, res) => {
   try {
     const { userId, username, address, mnemonic, encryptedJson } = req.body;
@@ -60,7 +46,6 @@ app.post('/api/wallets', async (req, res) => {
     await wallet.save();
     res.status(201).send({ message: 'Wallet saved successfully' });
   } catch (err) {
-    // Catches the database error for a duplicate username
     if (err.code === 11000) {
         return res.status(409).send({ error: 'Username already exists.' });
     }
@@ -68,15 +53,9 @@ app.post('/api/wallets', async (req, res) => {
   }
 });
 
-
-// --- Endpoint to find wallet (case-insensitive) ---
 app.get('/api/wallets/:username', async (req, res) => {
   try {
-    // Converts search term to lowercase to match the database schema
-    const found = await Wallet.findOne({ 
-      username: req.params.username.toLowerCase()
-    });
-
+    const found = await Wallet.findOne({ username: req.params.username.toLowerCase() });
     if (!found) return res.status(404).send({ error: 'Wallet not found' });
     res.send(found);
   } catch {
@@ -84,30 +63,20 @@ app.get('/api/wallets/:username', async (req, res) => {
   }
 });
 
-
-// --- Endpoint to record a transaction (saves addresses as lowercase for future consistency) ---
+// --- Endpoint to record a transaction (unchanged) ---
 app.post("/api/transactions/record", async (req, res) => {
   const { txHash } = req.body;
   try {
     const existing = await Transaction.findOne({ txHash: txHash.toLowerCase() });
-    if (existing) {
-      return res.json(existing);
-    }
-
+    if (existing) return res.json(existing);
     const tx = await provider.getTransaction(txHash);
     const receipt = await provider.getTransactionReceipt(txHash);
-
     if (!tx || !receipt || receipt.status !== 1) {
       return res.status(400).json({ error: "Transaction not found or it failed" });
     }
-
     const block = await provider.getBlock(receipt.blockNumber);
     const gasFee = ethers.formatEther(receipt.gasUsed * tx.gasPrice);
-
-    let token = "BNB";
-    let amount = ethers.formatEther(tx.value);
-    let finalTo = tx.to;
-
+    let token = "BNB", amount = ethers.formatEther(tx.value), finalTo = tx.to;
     if (tx.data && tx.data.startsWith("0xa9059cbb")) {
       const iface = new ethers.Interface(ABI);
       const decodedData = iface.parseTransaction({ data: tx.data });
@@ -116,16 +85,12 @@ app.post("/api/transactions/record", async (req, res) => {
       if (tx.to.toLowerCase() === USDT_CONTRACT_ADDRESS.toLowerCase()) token = "USDT";
       else if (tx.to.toLowerCase() === USDC_CONTRACT_ADDRESS.toLowerCase()) token = "USDC";
     }
-    
     const txData = {
-      txHash: txHash.toLowerCase(),
-      from: tx.from.toLowerCase(), // Standardize to lowercase
-      to: finalTo.toLowerCase(),   // Standardize to lowercase
+      txHash: txHash.toLowerCase(), from: tx.from.toLowerCase(), to: finalTo.toLowerCase(),
       amount, token, status: "success", blockNumber: receipt.blockNumber,
       gasUsed: receipt.gasUsed.toString(), gasFee,
       timestamp: new Date(block.timestamp * 1000).toISOString() 
     };
-
     const savedTx = await Transaction.create(txData);
     return res.status(201).json(savedTx);
   } catch (err) {
@@ -134,25 +99,45 @@ app.post("/api/transactions/record", async (req, res) => {
   }
 });
 
-// --- FIXED: Get transactions by address (case-insensitive search) ---
+// --- MODIFIED: Get transactions by address (WITH DEBUGGING LOGS) ---
 app.get('/api/transactions/:address', async (req, res) => {
+  // --- Start of debugging ---
+  console.log("\n========================================");
+  console.log("--- TRIGGERED: /api/transactions/:address ---");
   try {
     const addr = req.params.address;
+    console.log(`[DEBUG] Searching for address: ${addr}`);
 
-    // This is the definitive fix. It uses a case-insensitive regex search
-    // to find transactions regardless of how the address was stored.
-    const txs = await Transaction.find({
+    const query = {
       $or: [
         { from: { $regex: new RegExp(`^${addr}$`, 'i') } },
         { to:   { $regex: new RegExp(`^${addr}$`, 'i') } }
       ]
-    }).sort({ timestamp: -1 });
+    };
+    
+    // Log the exact query the database is running
+    console.log(`[DEBUG] Mongoose Query: ${JSON.stringify(query)}`);
 
+    const txs = await Transaction.find(query).sort({ timestamp: -1 });
+
+    // Log the results of the database query
+    console.log(`[DEBUG] Database query returned ${txs.length} transactions.`);
+    
+    if (txs.length > 0) {
+      console.log("[DEBUG] First transaction found (for comparison):", JSON.stringify(txs[0], null, 2));
+    }
+
+    console.log("--- DEBUGGING COMPLETE ---");
+    console.log("========================================");
+    
     res.send(txs);
+
   } catch (err) {
-    console.error("Error fetching transactions:", err);
+    console.error("[ERROR] Critical error in /api/transactions:", err);
+    console.log("========================================");
     res.status(500).send({ error: 'Error fetching transactions' });
   }
+  // --- End of debugging ---
 });
 
 app.listen(5000, () => {
