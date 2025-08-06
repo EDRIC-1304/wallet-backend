@@ -139,7 +139,6 @@ app.get('/api/transactions/:address', async (req, res) => {
   }
   // --- End of debugging ---
 });
-
 app.listen(5000, () => {
   console.log("✅ Server running on port 5000");
 });
