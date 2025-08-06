@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const { ethers } = require('ethers');
 
-// Constants
+// --- Constants ---
 const USDT_CONTRACT_ADDRESS = '0x787A697324dbA4AB965C58CD33c13ff5eeA6295F';
 const USDC_CONTRACT_ADDRESS = '0x342e3aA1248AB77E319e3331C6fD3f1F2d4B36B1';
 const ABI = ["function transfer(address to, uint amount) returns (bool)"];
@@ -14,20 +14,20 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Database Connection
+// --- Database Connection ---
 const MONGO_URI = 'mongodb+srv://edric:wined@cluster0.49d4fas.mongodb.net/metamask';
 mongoose.connect(MONGO_URI)
 .then(() => console.log("MongoDB Connected"))
 .catch(err => console.log("MongoDB Error:", err));
 
-// --- MODIFIED: Wallet Schema to enforce unique, case-insensitive usernames ---
+// --- Wallet Schema with Unique Username ---
 const walletSchema = new mongoose.Schema({
   userId: String,
   username: { 
     type: String, 
     required: true, 
-    unique: true,    // Ensures no two documents can have the same username
-    lowercase: true, // Automatically converts username to lowercase before saving
+    unique: true,    // Enforces unique usernames at the database level
+    lowercase: true, // Automatically converts username to lowercase
   },
   address: String,
   mnemonic: String,
@@ -36,7 +36,7 @@ const walletSchema = new mongoose.Schema({
 
 const Wallet = mongoose.model('Wallet', walletSchema);
 
-// Transaction Schema
+// --- Transaction Schema ---
 const transactionSchema = new mongoose.Schema({
     txHash: { type: String, required: true, unique: true, lowercase: true },
     from: String, 
@@ -52,28 +52,27 @@ const transactionSchema = new mongoose.Schema({
 const Transaction = mongoose.model('Transaction', transactionSchema);
 
 
-// --- MODIFIED: Endpoint to create wallet with duplicate username check ---
+// --- Endpoint to create wallet (handles duplicate usernames) ---
 app.post('/api/wallets', async (req, res) => {
   try {
     const { userId, username, address, mnemonic, encryptedJson } = req.body;
-    // The 'lowercase: true' in the schema will automatically handle the username
     const wallet = new Wallet({ userId, username, address, mnemonic, encryptedJson });
     await wallet.save();
     res.status(201).send({ message: 'Wallet saved successfully' });
   } catch (err) {
-    // If a duplicate username is sent, MongoDB will throw error code 11000
+    // Catches the database error for a duplicate username
     if (err.code === 11000) {
-        return res.status(409).send({ error: 'Username already exists.' }); // 409 Conflict
+        return res.status(409).send({ error: 'Username already exists.' });
     }
     res.status(500).send({ error: 'Error saving wallet' });
   }
 });
 
 
-// --- MODIFIED: Endpoint to find wallet (case-insensitive) ---
+// --- Endpoint to find wallet (case-insensitive) ---
 app.get('/api/wallets/:username', async (req, res) => {
   try {
-    // The username in the database is already lowercase, so we just convert the search parameter
+    // Converts search term to lowercase to match the database schema
     const found = await Wallet.findOne({ 
       username: req.params.username.toLowerCase()
     });
@@ -86,7 +85,7 @@ app.get('/api/wallets/:username', async (req, res) => {
 });
 
 
-// --- FIXED: This endpoint now saves all addresses as lowercase ---
+// --- Endpoint to record a transaction (saves addresses as lowercase for future consistency) ---
 app.post("/api/transactions/record", async (req, res) => {
   const { txHash } = req.body;
   try {
@@ -118,17 +117,12 @@ app.post("/api/transactions/record", async (req, res) => {
       else if (tx.to.toLowerCase() === USDC_CONTRACT_ADDRESS.toLowerCase()) token = "USDC";
     }
     
-    // The critical fix: Save all addresses as lowercase for consistent querying.
     const txData = {
       txHash: txHash.toLowerCase(),
-      from: tx.from.toLowerCase(), // Now saved as lowercase
-      to: finalTo.toLowerCase(),   // Now saved as lowercase
-      amount,
-      token,
-      status: "success",
-      blockNumber: receipt.blockNumber,
-      gasUsed: receipt.gasUsed.toString(),
-      gasFee,
+      from: tx.from.toLowerCase(), // Standardize to lowercase
+      to: finalTo.toLowerCase(),   // Standardize to lowercase
+      amount, token, status: "success", blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(), gasFee,
       timestamp: new Date(block.timestamp * 1000).toISOString() 
     };
 
@@ -140,15 +134,18 @@ app.post("/api/transactions/record", async (req, res) => {
   }
 });
 
-// --- FIXED: This endpoint now queries for lowercase addresses ---
+// --- FIXED: Get transactions by address (case-insensitive search) ---
 app.get('/api/transactions/:address', async (req, res) => {
   try {
-    // Convert the incoming address to lowercase to match the database format.
-    const addr = req.params.address.toLowerCase();
+    const addr = req.params.address;
 
-    // The query now looks for an exact lowercase match. This is reliable.
+    // This is the definitive fix. It uses a case-insensitive regex search
+    // to find transactions regardless of how the address was stored.
     const txs = await Transaction.find({
-      $or: [ { from: addr }, { to: addr } ]
+      $or: [
+        { from: { $regex: new RegExp(`^${addr}$`, 'i') } },
+        { to:   { $regex: new RegExp(`^${addr}$`, 'i') } }
+      ]
     }).sort({ timestamp: -1 });
 
     res.send(txs);
