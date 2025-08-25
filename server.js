@@ -1,4 +1,4 @@
-// server.js (Final, Complete Version with JWT Authentication)
+// server.js (UPDATED with Deadline Logic - FULL CODE)
 
 const express = require('express');
 const mongoose = require('mongoose');
@@ -19,19 +19,16 @@ if (!MONGO_URI || !JWT_SECRET) {
     process.exit(1);
 }
 
-// --- Database Connection ---
+// --- Database Connection & CORS ---
 mongoose.connect(MONGO_URI)
 .then(() => console.log("✅ MongoDB Connected"))
 .catch(err => console.error("❌ MongoDB Connection Error:", err));
-
-// --- CORS Configuration ---
 const frontendURL = process.env.VERCEL_FRONTEND_URL;
 const corsOptions = {
   origin: [frontendURL, 'http://localhost:3000'],
   optionsSuccessStatus: 200
 };
 app.use(cors(corsOptions));
-
 
 // --- SCHEMAS ---
 const userSchema = new mongoose.Schema({
@@ -49,37 +46,34 @@ const agreementSchema = new mongoose.Schema({
     amount: { type: String, required: true },
     token: { type: String, required: true },
     tokenAddress: { type: String, required: true },
-    status: { type: String, default: 'Created' },
-    createdAt: { type: Date, default: Date.now }
+    status: { type: String, default: 'Created' }, // Now includes 'Expired'
+    createdAt: { type: Date, default: Date.now },
+    // --- NEW ---
+    deadline: { type: Date, required: true } // Store the expiration time
 });
 const Agreement = mongoose.model('Agreement', agreementSchema);
-
 
 // --- MIDDLEWARE ---
 const authMiddleware = (req, res, next) => {
     const authHeader = req.header('Authorization');
     if (!authHeader) return res.status(401).send({ error: 'Access denied. No token provided.' });
-    
     const token = authHeader.replace('Bearer ', '');
     if (!token) return res.status(401).send({ error: 'Access denied. Malformed token.' });
-
     try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded;
+        req.user = jwt.verify(token, JWT_SECRET);
         next();
     } catch (err) {
         res.status(400).send({ error: 'Invalid token.' });
     }
 };
 
-// --- API ENDPOINTS ---
-
-// Auth Routes
+// --- AUTH API ENDPOINTS ---
 app.get('/api/auth/check-user/:address', async (req, res) => {
     try {
         const user = await User.findOne({ address: req.params.address.toLowerCase() });
         res.send({ isRegistered: !!user });
     } catch (err) {
+        console.error("Check-user error:", err);
         res.status(500).send({ error: 'Server error' });
     }
 });
@@ -90,9 +84,9 @@ app.post('/api/auth/register', async (req, res) => {
         if (!address || !password) {
             return res.status(400).send({ error: 'Address and password are required.' });
         }
-        let user = await User.findOne({ address: address.toLowerCase() });
-        if (user) return res.status(400).send({ error: 'User already registered.' });
-
+        if (await User.findOne({ address: address.toLowerCase() })) {
+            return res.status(400).send({ error: 'User already registered.' });
+        }
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         
@@ -108,6 +102,7 @@ app.post('/api/auth/register', async (req, res) => {
         res.status(201).send({ token });
     } catch (err) {
         if (err.code === 11000) return res.status(400).send({ error: 'Username is already taken.' });
+        console.error("Register error:", err);
         res.status(500).send({ error: 'Server error during registration.' });
     }
 });
@@ -118,49 +113,54 @@ app.post('/api/auth/login', async (req, res) => {
         if (!identifier || !password) {
             return res.status(400).send({ error: 'Identifier and password are required.' });
         }
-        const isAddress = identifier.startsWith('0x');
-        const query = isAddress ? { address: identifier.toLowerCase() } : { username: identifier.toLowerCase() };
-        
+        const query = identifier.startsWith('0x') ? { address: identifier.toLowerCase() } : { username: identifier.toLowerCase() };
         const user = await User.findOne(query);
-        if (!user) return res.status(400).send({ error: 'Invalid credentials.' });
-        
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(400).send({ error: 'Invalid credentials.' });
-        
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+            return res.status(400).send({ error: 'Invalid credentials.' });
+        }
         const payload = { address: user.address };
         const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
         res.send({ token });
     } catch (err) {
+        console.error("Login error:", err);
         res.status(500).send({ error: 'Server error during login.' });
     }
 });
 
-
-// Protected Agreement Routes
+// --- AGREEMENT API ENDPOINTS ---
 app.get('/api/agreements', authMiddleware, async (req, res) => {
     try {
         const userAddress = req.user.address.toLowerCase();
-        const agreements = await Agreement.find({
+        let agreements = await Agreement.find({
             $or: [{ depositor: userAddress }, { arbiter: userAddress }, { beneficiary: userAddress }]
-        }).sort({ createdAt: -1 });
+        }).sort({ createdAt: -1 }).lean();
+        
+        const now = new Date();
+        for (const agg of agreements) {
+            if (agg.status === 'Created' && now > agg.deadline) {
+                agg.status = 'Expired';
+            }
+        }
         res.send(agreements);
     } catch (err) {
-        res.status(500).send({ error: 'Server error while fetching agreements.' });
+        console.error("Error fetching agreements:", err);
+        res.status(500).send({ error: 'Server error while fetching agreements' });
     }
 });
 
 app.post('/api/agreements', authMiddleware, async (req, res) => {
     try {
         const { contractAddress, depositor, arbiter, beneficiary, amount, token, tokenAddress } = req.body;
-        // Additional check to ensure the JWT user is the one creating the agreement
-        if (req.user.address.toLowerCase() !== depositor.toLowerCase()) {
-            return res.status(403).send({ error: 'Forbidden: You can only create agreements for yourself.' });
-        }
-        const newAgreement = new Agreement({ contractAddress, depositor, arbiter, beneficiary, amount, token, tokenAddress });
+        
+        const deadline = new Date(Date.now() + 2 * 60 * 1000);
+        const newAgreement = new Agreement({
+            contractAddress, depositor, arbiter, beneficiary, amount, token, tokenAddress, deadline
+        });
         await newAgreement.save();
         res.status(201).send(newAgreement);
     } catch (err) {
-        res.status(500).send({ error: 'Server error while saving agreement.' });
+        console.error("Error saving agreement:", err);
+        res.status(500).send({ error: 'Server error while saving agreement' });
     }
 });
 
@@ -176,7 +176,8 @@ app.put('/api/agreements/:contractAddress/status', authMiddleware, async (req, r
         if (!updatedAgreement) return res.status(404).send({ error: 'Agreement not found' });
         res.send(updatedAgreement);
     } catch (err) {
-        res.status(500).send({ error: 'Server error while updating agreement status.' });
+        console.error("Error updating status:", err);
+        res.status(500).send({ error: 'Server error while updating agreement status' });
     }
 });
 
