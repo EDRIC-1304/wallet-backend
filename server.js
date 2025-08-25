@@ -1,4 +1,4 @@
-// server.js (Final Version with Password Auth and JWT Sessions)
+// server.js (Final, Complete Version with JWT Authentication)
 
 const express = require('express');
 const mongoose = require('mongoose');
@@ -12,7 +12,7 @@ app.use(express.json());
 
 // --- Configuration ---
 const MONGO_URI = process.env.MONGO_URI;
-const JWT_SECRET = process.env.JWT_SECRET; // IMPORTANT: Add a long, random secret string in Render
+const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!MONGO_URI || !JWT_SECRET) {
     console.error("FATAL ERROR: MONGO_URI and JWT_SECRET environment variables are required.");
@@ -34,16 +34,13 @@ app.use(cors(corsOptions));
 
 
 // --- SCHEMAS ---
-
-// NEW: User Schema for authentication
 const userSchema = new mongoose.Schema({
     address: { type: String, required: true, unique: true, lowercase: true },
-    username: { type: String, unique: true, sparse: true, lowercase: true }, // Optional and unique
+    username: { type: String, unique: true, sparse: true, lowercase: true },
     password: { type: String, required: true }
 });
 const User = mongoose.model('User', userSchema);
 
-// Agreement Schema (Unchanged)
 const agreementSchema = new mongoose.Schema({
     contractAddress: { type: String, required: true, unique: true, lowercase: true },
     depositor: { type: String, required: true, lowercase: true },
@@ -59,35 +56,25 @@ const Agreement = mongoose.model('Agreement', agreementSchema);
 
 
 // --- MIDDLEWARE ---
-
-// Middleware to verify JWT token and protect routes
 const authMiddleware = (req, res, next) => {
     const authHeader = req.header('Authorization');
-    if (!authHeader) {
-        return res.status(401).send({ error: 'Access denied. No token provided.' });
-    }
+    if (!authHeader) return res.status(401).send({ error: 'Access denied. No token provided.' });
     
     const token = authHeader.replace('Bearer ', '');
-    if (!token) {
-        return res.status(401).send({ error: 'Access denied. Malformed token.' });
-    }
+    if (!token) return res.status(401).send({ error: 'Access denied. Malformed token.' });
 
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded; // Adds the user payload (e.g., { address: '...' }) to the request
+        req.user = decoded;
         next();
     } catch (err) {
         res.status(400).send({ error: 'Invalid token.' });
     }
 };
 
-
 // --- API ENDPOINTS ---
 
-// --- Authentication Routes ---
-
-// @route   POST /api/auth/check-user/:address
-// @desc    Check if a wallet address is already registered.
+// Auth Routes
 app.get('/api/auth/check-user/:address', async (req, res) => {
     try {
         const user = await User.findOne({ address: req.params.address.toLowerCase() });
@@ -97,84 +84,61 @@ app.get('/api/auth/check-user/:address', async (req, res) => {
     }
 });
 
-
-// @route   POST /api/auth/register
-// @desc    Register a new user after they've signed a message.
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { address, password, username } = req.body;
         if (!address || !password) {
             return res.status(400).send({ error: 'Address and password are required.' });
         }
-
         let user = await User.findOne({ address: address.toLowerCase() });
-        if (user) {
-            return res.status(400).send({ error: 'User already registered.' });
-        }
+        if (user) return res.status(400).send({ error: 'User already registered.' });
 
-        // Hash the password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         
         const newUser = new User({
             address: address.toLowerCase(),
             password: hashedPassword,
-            ...(username && { username: username.toLowerCase() }) // Add username only if provided
+            ...(username && { username: username.toLowerCase() })
         });
-
         await newUser.save();
 
-        // Create and sign a JWT token
         const payload = { address: newUser.address };
-        const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' }); // Token expires in 7 days
-        
+        const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
         res.status(201).send({ token });
-
     } catch (err) {
         if (err.code === 11000) return res.status(400).send({ error: 'Username is already taken.' });
         res.status(500).send({ error: 'Server error during registration.' });
     }
 });
 
-
-// @route   POST /api/auth/login
-// @desc    Log in a user with address/username and password.
 app.post('/api/auth/login', async (req, res) => {
     try {
-        const { identifier, password } = req.body; // identifier can be address or username
+        const { identifier, password } = req.body;
         if (!identifier || !password) {
             return res.status(400).send({ error: 'Identifier and password are required.' });
         }
-
         const isAddress = identifier.startsWith('0x');
         const query = isAddress ? { address: identifier.toLowerCase() } : { username: identifier.toLowerCase() };
         
         const user = await User.findOne(query);
-        if (!user) {
-            return res.status(400).send({ error: 'Invalid credentials.' });
-        }
+        if (!user) return res.status(400).send({ error: 'Invalid credentials.' });
         
         const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(400).send({ error: 'Invalid credentials.' });
-        }
+        if (!isMatch) return res.status(400).send({ error: 'Invalid credentials.' });
         
         const payload = { address: user.address };
         const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
-
         res.send({ token });
-
     } catch (err) {
         res.status(500).send({ error: 'Server error during login.' });
     }
 });
 
 
-// --- Agreement Routes (Now Protected) ---
-
+// Protected Agreement Routes
 app.get('/api/agreements', authMiddleware, async (req, res) => {
     try {
-        // req.user.address comes from the decoded JWT in authMiddleware
         const userAddress = req.user.address.toLowerCase();
         const agreements = await Agreement.find({
             $or: [{ depositor: userAddress }, { arbiter: userAddress }, { beneficiary: userAddress }]
@@ -185,13 +149,36 @@ app.get('/api/agreements', authMiddleware, async (req, res) => {
     }
 });
 
-// All other agreement routes should also be protected by authMiddleware
-app.post('/api/agreements', authMiddleware, async (req, res) => { /* ... unchanged logic ... */ });
-app.put('/api/agreements/:contractAddress/status', authMiddleware, async (req, res) => { /* ... unchanged logic ... */ });
-
-
-// --- Dynamic Port Binding ---
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+app.post('/api/agreements', authMiddleware, async (req, res) => {
+    try {
+        const { contractAddress, depositor, arbiter, beneficiary, amount, token, tokenAddress } = req.body;
+        // Additional check to ensure the JWT user is the one creating the agreement
+        if (req.user.address.toLowerCase() !== depositor.toLowerCase()) {
+            return res.status(403).send({ error: 'Forbidden: You can only create agreements for yourself.' });
+        }
+        const newAgreement = new Agreement({ contractAddress, depositor, arbiter, beneficiary, amount, token, tokenAddress });
+        await newAgreement.save();
+        res.status(201).send(newAgreement);
+    } catch (err) {
+        res.status(500).send({ error: 'Server error while saving agreement.' });
+    }
 });
+
+app.put('/api/agreements/:contractAddress/status', authMiddleware, async (req, res) => {
+    try {
+        const { contractAddress } = req.params;
+        const { status } = req.body;
+        const updatedAgreement = await Agreement.findOneAndUpdate(
+            { contractAddress: contractAddress.toLowerCase() },
+            { $set: { status: status } },
+            { new: true }
+        );
+        if (!updatedAgreement) return res.status(404).send({ error: 'Agreement not found' });
+        res.send(updatedAgreement);
+    } catch (err) {
+        res.status(500).send({ error: 'Server error while updating agreement status.' });
+    }
+});
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
