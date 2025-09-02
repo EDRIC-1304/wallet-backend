@@ -34,6 +34,7 @@ app.use(cors(corsOptions));
 const userSchema = new mongoose.Schema({
     address: { type: String, required: true, unique: true, lowercase: true },
     username: { type: String, unique: true, sparse: true, lowercase: true },
+    email: { type: String, unique: true, sparse: true, lowercase: true },
     password: { type: String, required: true }
 });
 const User = mongoose.model('User', userSchema);
@@ -80,12 +81,18 @@ app.get('/api/auth/check-user/:address', async (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
     try {
-        const { address, password, username } = req.body;
+        const { address, password, username, email } = req.body;
         if (!address || !password) {
             return res.status(400).send({ error: 'Address and password are required.' });
         }
         if (await User.findOne({ address: address.toLowerCase() })) {
             return res.status(400).send({ error: 'User already registered.' });
+        }
+        if (username && await User.findOne({ username: username.toLowerCase() })) {
+            return res.status(400).send({ error: 'Username is already taken.' });
+        }
+        if (email && await User.findOne({ email: email.toLowerCase() })) { // ADDED: Email check
+            return res.status(400).send({ error: 'Email is already registered.' });
         }
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
@@ -93,7 +100,8 @@ app.post('/api/auth/register', async (req, res) => {
         const newUser = new User({
             address: address.toLowerCase(),
             password: hashedPassword,
-            ...(username && { username: username.toLowerCase() })
+            ...(username && { username: username.toLowerCase() }),
+            ...(email && { email: email.toLowerCase() })
         });
         await newUser.save();
 
@@ -101,7 +109,7 @@ app.post('/api/auth/register', async (req, res) => {
         const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
         res.status(201).send({ token });
     } catch (err) {
-        if (err.code === 11000) return res.status(400).send({ error: 'Username is already taken.' });
+    if (err.code === 11000) return res.status(400).send({ error: 'Username or Email is already taken.' }); // MODIFIED: Updated error message
         console.error("Register error:", err);
         res.status(500).send({ error: 'Server error during registration.' });
     }
@@ -113,7 +121,14 @@ app.post('/api/auth/login', async (req, res) => {
         if (!identifier || !password) {
             return res.status(400).send({ error: 'Identifier and password are required.' });
         }
-        const query = identifier.startsWith('0x') ? { address: identifier.toLowerCase() } : { username: identifier.toLowerCase() };
+        let query;
+        if (identifier.startsWith('0x')) {
+            query = { address: identifier.toLowerCase() };
+        } else if (identifier.includes('@')) { // MODIFIED: Check for email format
+            query = { email: identifier.toLowerCase() }; // MODIFIED: Look up by email
+        } else {
+            query = { username: identifier.toLowerCase() }; // Original username lookup
+        }
         const user = await User.findOne(query);
         if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(400).send({ error: 'Invalid credentials.' });
