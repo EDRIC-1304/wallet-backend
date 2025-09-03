@@ -117,19 +117,24 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
     try {
-        const { identifier, password } = req.body;
-        if (!identifier || !password) {
-            return res.status(400).send({ error: 'Identifier and password are required.' });
+        const { username, email, password } = req.body; // Expect separate username, email, password
+        if (!password || (!username && !email)) { // Password is required, and at least one of username/email
+            return res.status(400).send({ error: 'Password and either username or email are required.' });
         }
-        let query;
-        if (identifier.startsWith('0x')) {
-            query = { address: identifier.toLowerCase() };
-        } else if (identifier.includes('@')) { // MODIFIED: Check for email format
-            query = { email: identifier.toLowerCase() }; // MODIFIED: Look up by email
-        } else {
-            query = { username: identifier.toLowerCase() }; // Original username lookup
+
+        let query = {};
+        if (username) {
+            query.username = username.toLowerCase();
         }
+        if (email) {
+            query.email = email.toLowerCase();
+        }
+
+        // If both username and email are provided, try to find a user matching both
+        // If only one is provided, find by that one.
+        // If an account has both, but user only provides one, it will still match.
         const user = await User.findOne(query);
+
         if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(400).send({ error: 'Invalid credentials.' });
         }
