@@ -148,6 +148,46 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
+// ... (after the app.post('/api/auth/login', ...) endpoint)
+
+app.put('/api/auth/reset-password', async (req, res) => {
+    try {
+        const { address, newPassword } = req.body;
+
+        // --- Validation ---
+        if (!address || !newPassword) {
+            return res.status(400).send({ error: 'Address and new password are required.' });
+        }
+        if (!address.startsWith('0x')) {
+            return res.status(400).send({ error: 'Invalid address format.' });
+        }
+
+        // --- Find the user ---
+        const user = await User.findOne({ address: address.toLowerCase() });
+        if (!user) {
+            return res.status(404).send({ error: 'No account found for this address.' });
+        }
+
+        // --- Hash the new password and update the user document ---
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        await User.updateOne(
+            { address: address.toLowerCase() },
+            { $set: { password: hashedPassword } }
+        );
+
+        res.status(200).send({ message: 'Password has been reset successfully.' });
+
+    } catch (err) {
+        console.error("Reset password error:", err);
+        res.status(500).send({ error: 'Server error during password reset.' });
+    }
+});
+
+// --- AGREEMENT API ENDPOINTS ---
+// ... (rest of your file)
+
 // --- AGREEMENT API ENDPOINTS ---
 app.get('/api/agreements', authMiddleware, async (req, res) => {
     try {
