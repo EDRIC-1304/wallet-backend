@@ -39,6 +39,9 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', userSchema);
 
+// --- SCHEMAS ---
+// ... userSchema remains the same
+
 const agreementSchema = new mongoose.Schema({
     contractAddress: { type: String, required: true, unique: true, lowercase: true },
     depositor: { type: String, required: true, lowercase: true },
@@ -47,12 +50,15 @@ const agreementSchema = new mongoose.Schema({
     amount: { type: String, required: true },
     token: { type: String, required: true },
     tokenAddress: { type: String, required: true },
-    status: { type: String, default: 'Created' }, // Now includes 'Expired'
+    status: { type: String, default: 'Created' },
     createdAt: { type: Date, default: Date.now },
-    // --- NEW ---
-    deadline: { type: Date, required: true } // Store the expiration time
+    deadline: { type: Date, required: true },
+    // --- ADD THIS LINE ---
+    transactionHash: { type: String, default: null } // To store the fund/release TX hash
 });
 const Agreement = mongoose.model('Agreement', agreementSchema);
+
+// ... middleware remains the same
 
 // --- MIDDLEWARE ---
 const authMiddleware = (req, res, next) => {
@@ -179,15 +185,28 @@ app.post('/api/agreements', authMiddleware, async (req, res) => {
     }
 });
 
+// ... other endpoints remain the same
+
 app.put('/api/agreements/:contractAddress/status', authMiddleware, async (req, res) => {
     try {
         const { contractAddress } = req.params;
-        const { status } = req.body;
+        // --- MODIFIED: Destructure status AND transactionHash from the request body ---
+        const { status, transactionHash } = req.body;
+
+        const updateData = {
+            $set: {
+                status: status,
+                // Conditionally add transactionHash to the update if it was provided
+                ...(transactionHash && { transactionHash: transactionHash })
+            }
+        };
+
         const updatedAgreement = await Agreement.findOneAndUpdate(
             { contractAddress: contractAddress.toLowerCase() },
-            { $set: { status: status } },
+            updateData,
             { new: true }
         );
+
         if (!updatedAgreement) return res.status(404).send({ error: 'Agreement not found' });
         res.send(updatedAgreement);
     } catch (err) {
@@ -195,6 +214,8 @@ app.put('/api/agreements/:contractAddress/status', authMiddleware, async (req, r
         res.status(500).send({ error: 'Server error while updating agreement status' });
     }
 });
+
+// ... app.listen remains the same
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
