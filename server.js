@@ -33,8 +33,8 @@ app.use(cors(corsOptions));
 // --- SCHEMAS ---
 const userSchema = new mongoose.Schema({
     address: { type: String, required: true, unique: true, lowercase: true },
-    username: { type: String, unique: true, sparse: true, lowercase: true },
-    email: { type: String, unique: true, sparse: true, lowercase: true },
+    username: { type: String, required: true, unique: true, lowercase: true }, // Made required
+    email: { type: String, required: true, unique: true, lowercase: true },     // Made required
     password: { type: String, required: true }
 });
 const User = mongoose.model('User', userSchema);
@@ -79,29 +79,32 @@ app.get('/api/auth/check-user/:address', async (req, res) => {
     }
 });
 
-app.post('/api/auth/register', async (req, res) => {
-    try {
+        app.post('/api/auth/register', async (req, res) => {
+        try {
         const { address, password, username, email } = req.body;
-        if (!address || !password) {
-            return res.status(400).send({ error: 'Address and password are required.' });
+        // NEW: All three (address, username, email, password) are now required
+        if (!address || !password || !username || !email) {
+            return res.status(400).send({ error: 'Address, username, email, and password are required for registration.' });
         }
+
         if (await User.findOne({ address: address.toLowerCase() })) {
-            return res.status(400).send({ error: 'User already registered.' });
+            return res.status(400).send({ error: 'Wallet address already registered.' });
         }
-        if (username && await User.findOne({ username: username.toLowerCase() })) {
+        if (await User.findOne({ username: username.toLowerCase() })) {
             return res.status(400).send({ error: 'Username is already taken.' });
         }
-        if (email && await User.findOne({ email: email.toLowerCase() })) { // ADDED: Email check
+        if (await User.findOne({ email: email.toLowerCase() })) {
             return res.status(400).send({ error: 'Email is already registered.' });
         }
+
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-        
+
         const newUser = new User({
             address: address.toLowerCase(),
+            username: username.toLowerCase(), // Now required
+            email: email.toLowerCase(),       // Now required
             password: hashedPassword,
-            ...(username && { username: username.toLowerCase() }),
-            ...(email && { email: email.toLowerCase() })
         });
         await newUser.save();
 
@@ -117,27 +120,24 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
     try {
-        const { username, email, password } = req.body; // Expect separate username, email, password
-        if (!password || (!username && !email)) { // Password is required, and at least one of username/email
-            return res.status(400).send({ error: 'Password and either username or email are required.' });
+        const { username, email, password } = req.body; // Expect username OR email, and password
+
+        // NEW: Ensure at least one identifier (username or email) and password are provided
+        if (!password || (!username && !email)) {
+            return res.status(400).send({ error: 'Password and either username or email are required for login.' });
         }
 
-        let query = {};
+        let user = null;
         if (username) {
-            query.username = username.toLowerCase();
+            user = await User.findOne({ username: username.toLowerCase() });
+        } else if (email) { // If username is not provided, try with email
+            user = await User.findOne({ email: email.toLowerCase() });
         }
-        if (email) {
-            query.email = email.toLowerCase();
-        }
-
-        // If both username and email are provided, try to find a user matching both
-        // If only one is provided, find by that one.
-        // If an account has both, but user only provides one, it will still match.
-        const user = await User.findOne(query);
 
         if (!user || !(await bcrypt.compare(password, user.password))) {
-            return res.status(400).send({ error: 'Invalid credentials.' });
+            return res.status(400).send({ error: 'Invalid username, email, or password.' });
         }
+
         const payload = { address: user.address };
         const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
         res.send({ token });
